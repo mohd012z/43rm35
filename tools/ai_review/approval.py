@@ -15,6 +15,8 @@ class ActionContext:
     impact: str = "LOW"
     ambiguous: bool = False
     no_action: bool = False
+    checks_green: bool = False
+    evidence_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -25,30 +27,29 @@ class ApprovalDecision:
 
 
 def evaluate_approval(context: ActionContext) -> ApprovalDecision:
-    """Classify whether a proposed operation needs explicit human approval.
+    """Auto-approve verified reversible branch work; hold hard boundaries.
 
-    Read-only inspection and tests may proceed. Consequential control-plane,
-    permission/secret, destructive, or ambiguous high-impact operations are
-    held for approval. The policy is deliberately fail-closed for those cases.
+    Lola may finish ordinary reversible work automatically once required checks
+    and evidence are green. Explicit approval remains required for secrets or
+    permission changes, destructive/irreversible actions, ambiguous critical
+    actions, and control-plane mutations directly on the trusted default branch.
     """
     if context.no_action or context.action == "none":
         return ApprovalDecision(False, "NO_ACTION", "No repository action is required.")
 
-    reasons = []
-    if context.changes_control_plane and context.target_branch in {"master", "main"}:
-        reasons.append("trusted default-branch control-plane change")
     if context.touches_secrets_or_permissions:
-        reasons.append("secrets or permissions boundary change")
-    if context.destructive:
-        reasons.append("destructive operation")
-    if context.ambiguous and context.impact.upper() in {"HIGH", "CRITICAL"}:
-        reasons.append("ambiguous high-impact operation")
-
-    if reasons:
-        return ApprovalDecision(True, "REQUEST_APPROVAL", "; ".join(reasons))
+        return ApprovalDecision(True, "REQUEST_APPROVAL", "Secrets or permissions boundary change.")
+    if context.destructive or not context.reversible:
+        return ApprovalDecision(True, "REQUEST_APPROVAL", "Destructive or irreversible operation.")
+    if context.ambiguous and context.impact.upper() == "CRITICAL":
+        return ApprovalDecision(True, "REQUEST_APPROVAL", "Ambiguous critical-impact operation.")
+    if context.changes_control_plane and context.target_branch in {"master", "main"}:
+        return ApprovalDecision(True, "REQUEST_APPROVAL", "Trusted default-branch control-plane change.")
 
     if context.read_only or context.action in {"analyze", "run_tests", "static_check", "generate_report"}:
         return ApprovalDecision(False, "PROCEED_AUTOMATICALLY", "Read-only or verification operation.")
 
-    # Unknown mutating operations are not silently authorized.
-    return ApprovalDecision(True, "REQUEST_APPROVAL", "Unclassified mutating operation requires review.")
+    if context.reversible and context.checks_green and context.evidence_verified:
+        return ApprovalDecision(False, "PROCEED_AUTOMATICALLY", "Verified reversible branch operation.")
+
+    return ApprovalDecision(True, "REQUEST_APPROVAL", "Required verification is not yet green.")
