@@ -12,29 +12,53 @@ on:
           - /deep-dive
           - /360
           - /securitycheck
+  workflow_run:
+    workflows:
+      - Validate catalogue
+    types:
+      - completed
 
 permissions:
   contents: read
 
 concurrency:
-  group: lola-advisory-${{ github.ref }}
+  group: lola-advisory-${{ github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: false
 
 env:
   LOLA_REPOSITORY: mohd012z/lola
-  # Pin the engine so an advisory run cannot silently change underneath us.
   LOLA_SHA: 66d9bd02d5b9ed195aaccf6d922b8b08d522505e
 
 jobs:
   advisory:
     name: Lola read-only advisory
+    # Manual dispatch always runs. Automatic dispatch runs only after the
+    # catalogue workflow itself completed successfully.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
+      - name: Resolve reviewed revision and mode
+        id: context
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "review_sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+            echo "mode=/deep-dive" >> "$GITHUB_OUTPUT"
+            echo "trigger=validated-catalogue" >> "$GITHUB_OUTPUT"
+          else
+            echo "review_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+            echo "trigger=manual" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout reviewed 43rm35 revision
         uses: actions/checkout@v4
         with:
+          ref: ${{ steps.context.outputs.review_sha }}
           path: project
           persist-credentials: false
 
@@ -56,6 +80,10 @@ jobs:
 
       - name: Build bounded Lola handoff
         shell: python
+        env:
+          REVIEW_SHA: ${{ steps.context.outputs.review_sha }}
+          REVIEW_MODE: ${{ steps.context.outputs.mode }}
+          REVIEW_TRIGGER: ${{ steps.context.outputs.trigger }}
         run: |
           import hashlib
           import json
@@ -67,8 +95,7 @@ jobs:
           handoff_dir = project / '.lola-advisory'
           handoff_dir.mkdir(exist_ok=True)
 
-          selected = []
-          for rel in [
+          requested = [
               'tools/catalogue.py',
               'tests/test_catalogue.py',
               'tests/test_phase2.py',
@@ -77,9 +104,13 @@ jobs:
               'docs/architecture.md',
               'docs/security.md',
               'docs/validation.md',
-          ]:
+          ]
+          selected = []
+          missing = []
+          for rel in requested:
               path = project / rel
               if not path.is_file():
+                  missing.append(rel)
                   continue
               data = path.read_bytes()
               selected.append({
@@ -88,12 +119,24 @@ jobs:
                   'sha256': hashlib.sha256(data).hexdigest(),
               })
 
+          if missing:
+              raise SystemExit(f'Required Lola scope files missing: {missing}')
+
+          mode = os.environ['REVIEW_MODE']
+          task_type = {
+              '/deep-dive': 'deep-dive',
+              '/360': 'deep-dive',
+              '/securitycheck': 'security-review',
+          }.get(mode)
+          if task_type is None:
+              raise SystemExit(f'Unsupported Lola mode: {mode}')
+
           manifest = {
               'contractVersion': '1.0',
               'jobId': f"43rm35-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}",
               'source': '43rm35-github-actions',
               'target': 'lola',
-              'taskType': 'deep-dive',
+              'taskType': task_type,
               'request': (
                   'Read-only advisory review for 43rm35 Issue #2. Validate Phase-2 '
                   'fingerprints, INFO/WARN/ERROR severity, severity_counts, duplicate '
@@ -112,10 +155,12 @@ jobs:
                   'owner': 'mohd012z',
                   'rootPath': str(project),
                   'platform': 'github-actions',
+                  'reviewedSha': os.environ['REVIEW_SHA'],
               },
               'selectedFiles': selected,
               'options': {
-                  'mode': '${{ inputs.mode }}',
+                  'mode': mode,
+                  'trigger': os.environ['REVIEW_TRIGGER'],
                   'noOpen': True,
                   'noPersistEvents': True,
                   'resolveUrls': False,
@@ -150,6 +195,8 @@ jobs:
       - name: Validate bounded result
         if: always()
         shell: python
+        env:
+          REVIEW_SHA: ${{ steps.context.outputs.review_sha }}
         run: |
           import json
           from pathlib import Path
@@ -172,7 +219,7 @@ jobs:
               'summary': result['summary'],
               'warnings': result.get('warnings', []),
               'lola_sha': '${{ env.LOLA_SHA }}',
-              'reviewed_sha': '${{ github.sha }}',
+              'reviewed_sha': '${{ steps.context.outputs.review_sha }}',
           }, indent=2))
 
       - name: Upload sanitized Lola result
