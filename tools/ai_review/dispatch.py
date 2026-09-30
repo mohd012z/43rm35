@@ -35,8 +35,15 @@ class DispatchPlan:
     base_sha: str = ""
 
 
+def _normalize_repo_path(path: str) -> str:
+    normalized = path.replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lstrip("/")
+
+
 def _is_control_plane(path: str) -> bool:
-    normalized = path.replace("\\", "/").lstrip("./")
+    normalized = _normalize_repo_path(path)
     return normalized.startswith(".github/workflows/") or normalized in {
         "CODEOWNERS",
         ".github/CODEOWNERS",
@@ -44,7 +51,7 @@ def _is_control_plane(path: str) -> bool:
 
 
 def _is_documentation(path: str) -> bool:
-    normalized = path.replace("\\", "/")
+    normalized = _normalize_repo_path(path)
     pure = PurePosixPath(normalized)
     return pure.suffix.lower() in DOC_SUFFIXES or "docs" in {part.lower() for part in pure.parts}
 
