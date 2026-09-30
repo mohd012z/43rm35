@@ -14,12 +14,39 @@ class AIReviewApprovalTests(unittest.TestCase):
         self.assertFalse(result.approval_required)
         self.assertEqual(result.disposition, "PROCEED_AUTOMATICALLY")
 
+    def test_verified_reversible_feature_branch_change_auto_proceeds(self):
+        result = evaluate_approval(ActionContext(
+            action="modify_code",
+            target_branch="feature/catalogue-validator",
+            reversible=True,
+            checks_green=True,
+            evidence_verified=True,
+            impact="MEDIUM",
+        ))
+        self.assertFalse(result.approval_required)
+        self.assertEqual(result.disposition, "PROCEED_AUTOMATICALLY")
+
+    def test_verified_reversible_feature_workflow_change_auto_proceeds(self):
+        result = evaluate_approval(ActionContext(
+            action="modify_workflow",
+            target_branch="feature/catalogue-validator",
+            changes_control_plane=True,
+            reversible=True,
+            checks_green=True,
+            evidence_verified=True,
+            impact="HIGH",
+        ))
+        self.assertFalse(result.approval_required)
+        self.assertEqual(result.disposition, "PROCEED_AUTOMATICALLY")
+
     def test_default_branch_control_plane_change_requires_approval(self):
         result = evaluate_approval(ActionContext(
             action="modify_workflow",
             target_branch="master",
             changes_control_plane=True,
             reversible=True,
+            checks_green=True,
+            evidence_verified=True,
         ))
         self.assertTrue(result.approval_required)
         self.assertEqual(result.disposition, "REQUEST_APPROVAL")
@@ -28,6 +55,8 @@ class AIReviewApprovalTests(unittest.TestCase):
         result = evaluate_approval(ActionContext(
             action="change_permissions",
             touches_secrets_or_permissions=True,
+            checks_green=True,
+            evidence_verified=True,
         ))
         self.assertTrue(result.approval_required)
         self.assertEqual(result.disposition, "REQUEST_APPROVAL")
@@ -37,16 +66,23 @@ class AIReviewApprovalTests(unittest.TestCase):
             action="delete_data",
             destructive=True,
             reversible=False,
+            checks_green=True,
+            evidence_verified=True,
         ))
         self.assertTrue(result.approval_required)
         self.assertEqual(result.disposition, "REQUEST_APPROVAL")
 
-    def test_ambiguous_high_impact_action_holds_for_approval(self):
+    def test_ambiguous_critical_impact_action_holds_for_approval(self):
         result = evaluate_approval(ActionContext(
             action="unknown_external_change",
-            impact="HIGH",
+            impact="CRITICAL",
             ambiguous=True,
         ))
+        self.assertTrue(result.approval_required)
+        self.assertEqual(result.disposition, "REQUEST_APPROVAL")
+
+    def test_unverified_mutation_still_waits(self):
+        result = evaluate_approval(ActionContext(action="modify_code", reversible=True))
         self.assertTrue(result.approval_required)
         self.assertEqual(result.disposition, "REQUEST_APPROVAL")
 
