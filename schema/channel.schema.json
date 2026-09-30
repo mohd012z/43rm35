@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/43rm35/channel.schema.json",
+  "title": "43rm35 Channel",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "tvg_name", "logo", "group", "url", "protocol"],
+  "properties": {
+    "id": {"type": "string"},
+    "name": {"type": "string", "minLength": 1},
+    "tvg_name": {"type": "string"},
+    "logo": {"type": "string"},
+    "group": {"type": "string"},
+    "url": {"type": "string", "minLength": 1},
+    "protocol": {"type": "string", "enum": ["hls", "http", "https", "rtmp", "rtmpe", "rtsp", "unknown"]}
+  }
+}
