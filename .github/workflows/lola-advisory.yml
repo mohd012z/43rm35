@@ -1,0 +1,196 @@
+name: Ask Lola advisory
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Lola review mode
+        required: true
+        default: /deep-dive
+        type: choice
+        options:
+          - /deep-dive
+          - /360
+          - /securitycheck
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lola-advisory-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LOLA_REPOSITORY: mohd012z/lola
+  # Pin the engine so an advisory run cannot silently change underneath us.
+  LOLA_SHA: 66d9bd02d5b9ed195aaccf6d922b8b08d522505e
+
+jobs:
+  advisory:
+    name: Lola read-only advisory
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout reviewed 43rm35 revision
+        uses: actions/checkout@v4
+        with:
+          path: project
+          persist-credentials: false
+
+      - name: Checkout pinned Lola engine
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LOLA_REPOSITORY }}
+          ref: ${{ env.LOLA_SHA }}
+          path: lola-engine
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Lola scan dependency
+        run: python -m pip install --disable-pip-version-check semgrep
+
+      - name: Build bounded Lola handoff
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          project = Path('project').resolve()
+          handoff_dir = project / '.lola-advisory'
+          handoff_dir.mkdir(exist_ok=True)
+
+          selected = []
+          for rel in [
+              'tools/catalogue.py',
+              'tests/test_catalogue.py',
+              'tests/test_phase2.py',
+              'schema/channel.schema.json',
+              'web/index.html',
+              'docs/architecture.md',
+              'docs/security.md',
+              'docs/validation.md',
+          ]:
+              path = project / rel
+              if not path.is_file():
+                  continue
+              data = path.read_bytes()
+              selected.append({
+                  'path': rel,
+                  'size': len(data),
+                  'sha256': hashlib.sha256(data).hexdigest(),
+              })
+
+          manifest = {
+              'contractVersion': '1.0',
+              'jobId': f"43rm35-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}",
+              'source': '43rm35-github-actions',
+              'target': 'lola',
+              'taskType': 'deep-dive',
+              'request': (
+                  'Read-only advisory review for 43rm35 Issue #2. Validate Phase-2 '
+                  'fingerprints, INFO/WARN/ERROR severity, severity_counts, duplicate '
+                  'identity/URL handling, malformed M3U behavior, tests and offline trust '
+                  'boundary. Stress-test the proposed public IPTV pipeline: SourceRegistry '
+                  '-> SourceAdapter -> Normalizer -> Validator -> Resolver -> Health/Evidence '
+                  '-> Deduplicator -> Exporter/API. Review provenance, stale-source handling, '
+                  'rate limits, retries, caching and deterministic deduplication. Proxy advice '
+                  'must remain interoperability-only and must not bypass DRM, authentication, '
+                  'subscriptions, tokens or geographic restrictions. Return evidence-backed '
+                  'advice only; do not modify the project.'
+              ),
+              'project': {
+                  'id': '43rm35',
+                  'name': '43rm35',
+                  'owner': 'mohd012z',
+                  'rootPath': str(project),
+                  'platform': 'github-actions',
+              },
+              'selectedFiles': selected,
+              'options': {
+                  'mode': '${{ inputs.mode }}',
+                  'noOpen': True,
+                  'noPersistEvents': True,
+                  'resolveUrls': False,
+                  'liveMonitor': False,
+                  'captureAllCode': False,
+              },
+              'authorization': {
+                  'confirmed': True,
+                  'scope': 'user-owned-or-authorized-project',
+              },
+              'createdAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+          }
+          (handoff_dir / 'handoff.json').write_text(
+              json.dumps(manifest, indent=2), encoding='utf-8'
+          )
+
+      - name: Validate handoff contract
+        working-directory: lola-engine
+        run: >-
+          python lola.py
+          --handoff-validate ../project/.lola-advisory/handoff.json
+
+      - name: Run Lola advisory
+        id: lola
+        working-directory: lola-engine
+        continue-on-error: true
+        run: >-
+          python lola.py
+          --handoff-run ../project/.lola-advisory/handoff.json
+          --handoff-result ../project/.lola-advisory/result.json
+
+      - name: Validate bounded result
+        if: always()
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          path = Path('project/.lola-advisory/result.json')
+          if not path.is_file():
+              raise SystemExit('Lola did not produce result.json')
+          if path.stat().st_size > 512 * 1024:
+              raise SystemExit('Lola result exceeded the 512 KiB contract limit')
+          result = json.loads(path.read_text(encoding='utf-8'))
+          required = {'contractVersion', 'jobId', 'status', 'provider', 'summary', 'warnings', 'provenance'}
+          missing = sorted(required - result.keys())
+          if missing:
+              raise SystemExit(f'Missing Lola result fields: {missing}')
+          if result['status'] not in {'completed', 'partial', 'failed', 'unsupported'}:
+              raise SystemExit(f"Unexpected Lola status: {result['status']}")
+          print(json.dumps({
+              'status': result['status'],
+              'provider': result['provider'],
+              'summary': result['summary'],
+              'warnings': result.get('warnings', []),
+              'lola_sha': '${{ env.LOLA_SHA }}',
+              'reviewed_sha': '${{ github.sha }}',
+          }, indent=2))
+
+      - name: Upload sanitized Lola result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lola-advisory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: project/.lola-advisory/result.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce Lola execution result
+        if: always()
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          result = json.loads(Path('project/.lola-advisory/result.json').read_text(encoding='utf-8'))
+          if result.get('status') in {'failed', 'unsupported'}:
+              raise SystemExit(f"Lola advisory ended as {result.get('status')}")
+          print(f"Lola advisory status: {result.get('status')}")
