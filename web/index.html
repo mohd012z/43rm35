@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>43rm35 Catalogue</title>
+  <style>
+    :root{font-family:system-ui,sans-serif;color-scheme:light dark}body{max-width:1100px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;gap:16px;align-items:center}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:20px 0}.card,table{border:1px solid #8885;border-radius:12px;padding:14px}.value{font-size:1.8rem;font-weight:700}table{width:100%;border-collapse:collapse;overflow:hidden}th,td{text-align:left;padding:10px;border-bottom:1px solid #8884}input{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #8886;margin-bottom:14px}.badge{padding:3px 8px;border:1px solid #8886;border-radius:999px;font-size:.8rem}.muted{opacity:.7}
+  </style>
+</head>
+<body>
+<header><div><h1>43rm35 Catalogue</h1><div class="muted">Read-only structural catalogue dashboard</div></div><span id="state" class="badge">Loading</span></header>
+<section class="cards" id="cards"></section>
+<input id="search" type="search" placeholder="Search channel, group or protocol…">
+<table><thead><tr><th>Channel</th><th>Group</th><th>Protocol</th></tr></thead><tbody id="rows"></tbody></table>
+<script>
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let channels=[];
+function render(q=''){const needle=q.trim().toLowerCase();const list=channels.filter(c=>[c.name,c.group,c.protocol].join(' ').toLowerCase().includes(needle));document.querySelector('#rows').innerHTML=list.map(c=>`<tr><td>${esc(c.name)}</td><td>${esc(c.group||'—')}</td><td><span class="badge">${esc(c.protocol)}</span></td></tr>`).join('')}
+Promise.all([fetch('../data/channels.json').then(r=>{if(!r.ok)throw Error('channels.json unavailable');return r.json()}),fetch('../reports/validation.json').then(r=>{if(!r.ok)throw Error('validation.json unavailable');return r.json()})]).then(([c,r])=>{channels=c;document.querySelector('#state').textContent='Offline validation';const cards=[['Channels',r.total],['Unique URLs',r.unique_urls],['Duplicate URLs',r.duplicate_url_count],['Issues',r.issue_entries]];document.querySelector('#cards').innerHTML=cards.map(([k,v])=>`<div class="card"><div class="muted">${esc(k)}</div><div class="value">${esc(v)}</div></div>`).join('');render()}).catch(e=>{document.querySelector('#state').textContent='Data not generated';document.querySelector('#cards').innerHTML=`<div class="card">${esc(e.message)}. Run the catalogue generator first.</div>`});
+document.querySelector('#search').addEventListener('input',e=>render(e.target.value));
+</script>
+</body>
+</html>
