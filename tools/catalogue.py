@@ -9,8 +9,10 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from collections import Counter
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 ATTR_RE = re.compile(r'([\w-]+)=(?:"([^"]*)"|([^\s,]+))')
@@ -159,19 +161,169 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("input", type=Path)
-    parser.add_argument("--output", type=Path, default=Path("data/channels.json"))
-    parser.add_argument("--report", type=Path, default=Path("reports/validation.json"))
-    args = parser.parse_args()
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Parse and structurally validate an Extended M3U catalogue (offline)."
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
 
+    test_cmd = sub.add_parser("test", help="offline parse + structural validation")
+    test_cmd.add_argument("input", type=Path)
+    test_cmd.add_argument("--output", type=Path, default=Path("data/channels.json"))
+    test_cmd.add_argument("--report", type=Path, default=Path("reports/validation.json"))
+
+    health_cmd = sub.add_parser(
+        "health",
+        help="network health report (opt-in; never runs during 'test' or CI)",
+    )
+    health_cmd.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data/channels.json"),
+        help="channels JSON produced by the 'test' command",
+    )
+    health_cmd.add_argument(
+        "--output",
+        type=Path,
+        default=Path("reports/health.json"),
+        help="where to write the JSON health report",
+    )
+    health_cmd.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="concurrent probes (clamped to 1..8)",
+    )
+    health_cmd.add_argument(
+        "--timeout",
+        type=float,
+        default=5.0,
+        help="per-probe timeout in seconds (clamped to 0.1..10)",
+    )
+    return parser
+
+
+def run_test_command(args: argparse.Namespace) -> int:
     channels = parse_m3u(args.input)
     report = validate(channels)
     write_json(args.output, channels)
     write_json(args.report, report)
     print(json.dumps({k: v for k, v in report.items() if k != "issues"}, indent=2))
     return 0 if channels else 1
+
+
+def run_health_command(args: argparse.Namespace, fetcher: Callable[[object], dict] | None = None) -> int:
+    """Run the opt-in network health probe and write a JSON report.
+
+    ``fetcher`` is injectable for tests; the default is the real bounded
+    http(s) transport. A missing input file is a usage error, not a probe
+    failure.
+    """
+    if not args.input.exists():
+        print(f"error: input not found: {args.input} (run the 'test' command first)", file=sys.stderr)
+        return 2
+    entries = json.loads(args.input.read_text(encoding="utf-8"))
+    if not isinstance(entries, list):
+        print("error: input must be a JSON list of channel entries", file=sys.stderr)
+        return 2
+
+    if fetcher is None:
+        _ensure_package_imports()
+        from tools.http_fetcher import fetch_http_probe
+
+        fetcher = fetch_http_probe
+
+    _ensure_package_imports()
+    from tools.stream_executor import ExecutorConfig, probe_entries
+
+    config = ExecutorConfig(
+        enabled=True,
+        max_workers=args.workers,
+        timeout_seconds=args.timeout,
+    )
+    results = probe_entries(entries, config=config, fetcher=fetcher)  # type: ignore[arg-type]  # non-None above
+
+    _ensure_package_imports()
+    from tools.health_report import build_health_report
+
+    report = build_health_report(entries, results, checked_at=_utc_now_iso())
+    write_json(args.output, report)
+    print(json.dumps(report["summary"], indent=2))
+    return 0
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _ensure_package_imports() -> None:
+    """Make ``tools.*`` importable when run as ``python tools/catalogue.py``.
+
+    The sibling modules (stream_executor, health_report, http_fetcher) use
+    package-relative imports, so they must be loaded through the ``tools``
+    package — which requires the repository root on sys.path.
+    """
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+def _legacy_test_parser() -> argparse.ArgumentParser:
+    """The pre-subcommand CLI shape: ``catalogue.py <input> [--output] [--report]``.
+
+    Kept so existing invocations (CI, README, scripts) keep working: in the
+    legacy form the first positional is the input playlist — even when it is
+    literally named ``test``.
+    """
+    parser = argparse.ArgumentParser(
+        description="Parse and structurally validate an Extended M3U catalogue (offline)."
+    )
+    parser.add_argument("input", type=Path)
+    parser.add_argument("--output", type=Path, default=Path("data/channels.json"))
+    parser.add_argument("--report", type=Path, default=Path("reports/validation.json"))
+    return parser
+
+
+def _positional_args(argv: list[str]) -> list[str]:
+    """Positional arguments only (every option in this CLI takes a value)."""
+    positions = []
+    skip_next = False
+    for arg in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg.startswith("-"):
+            skip_next = True
+            continue
+        positions.append(arg)
+    return positions
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    if argv and argv[0] == "health":
+        args = build_arg_parser().parse_args(argv)
+        return run_health_command(args)
+
+    # ``catalogue.py test --output ...`` (no other positional): legacy form
+    # where "test" is the input file, not a subcommand.
+    if argv and argv[0] == "test" and not _positional_args(argv[1:]):
+        args = _legacy_test_parser().parse_args(argv)
+        return run_test_command(args)
+
+    # ``catalogue.py <input.m3u> [--output] [--report]`` — legacy form where
+    # the first positional is the input playlist ("test" included).
+    if argv and argv[0] not in {"test", "health"}:
+        args = _legacy_test_parser().parse_args(argv)
+        return run_test_command(args)
+
+    args = build_arg_parser().parse_args(argv)
+    if args.command == "test":
+        return run_test_command(args)
+    return run_health_command(args)
 
 
 if __name__ == "__main__":

@@ -112,3 +112,29 @@ def run_probe_targets(
             results.append(future.result())
 
     return summarize_health(results)
+
+
+def probe_entries(
+    entries: Iterable[Mapping],
+    *,
+    config: Optional[ExecutorConfig] = None,
+    fetcher: Callable,
+) -> dict[str, object]:
+    """Probe all supported entries and return per-URL health results.
+
+    Unlike :func:`run_probe_targets`, this returns the individual
+    :class:`~tools.stream_health.HealthResult` objects (keyed by URL) so
+    callers can build per-stream reports. It always runs (callers decide
+    opt-in) and never probes rtmp/rtsp/other entries.
+    """
+    cfg = config or ExecutorConfig()
+    targets = select_probe_targets(entries)
+    if not targets:
+        return {}
+
+    results: dict[str, object] = {}
+    with ThreadPoolExecutor(max_workers=cfg.bounded_workers()) as pool:
+        submitted = [(entry, pool.submit(_probe_one, entry, cfg, fetcher)) for entry in targets]
+        for entry, future in submitted:
+            results[str(entry.get("url", ""))] = future.result()
+    return results
