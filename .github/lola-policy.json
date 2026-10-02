@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "fail_closed": true,
+  "pre_action_required": {
+    "lola": true,
+    "kernel_ai": true,
+    "in_ai": true,
+    "evidence_verifier": true
+  },
+  "agent_consensus_is_evidence": false,
+  "self_approval": false,
+  "decisions": {
+    "VERIFIED_TRUE": "continue",
+    "VERIFIED_FALSE": "block",
+    "CONTRADICTED": "block",
+    "INSUFFICIENT_EVIDENCE": "review",
+    "STALE": "reanalyze",
+    "UNKNOWN": "review",
+    "ERROR": "block"
+  },
+  "auto_fix": {
+    "enabled": false
+  }
+}
