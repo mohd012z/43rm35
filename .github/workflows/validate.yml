@@ -19,3 +19,30 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Parse legacy catalogue
         run: python tools/catalogue.py test --output /tmp/channels.json --report /tmp/validation.json
+
+  browser:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Generate dashboard data
+        run: python tools/catalogue.py test --output data/channels.json --report reports/validation.json
+      - name: Install Playwright test runner
+        run: npm install --no-save @playwright/test
+      - name: Install browser
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Start dashboard server
+        run: python -m http.server 8000 > /tmp/dashboard-http.log 2>&1 &
+      - name: Cross-browser dashboard smoke
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: npx playwright test tests/browser/dashboard.spec.js --project=${{ matrix.browser }}
