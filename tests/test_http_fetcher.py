@@ -53,6 +53,34 @@ class HTTPFetcherTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fetch_http_probe(request)
 
+    def test_loopback_destination_is_rejected_before_transport(self):
+        request = build_probe_request("http://127.0.0.1/live.m3u8")
+        with patch("tools.http_fetcher.urlopen") as mock_open:
+            with self.assertRaises(ValueError):
+                fetch_http_probe(request)
+            mock_open.assert_not_called()
+
+    def test_private_destination_is_rejected_before_transport(self):
+        request = build_probe_request("http://192.168.1.10/live.m3u8")
+        with patch("tools.http_fetcher.urlopen") as mock_open:
+            with self.assertRaises(ValueError):
+                fetch_http_probe(request)
+            mock_open.assert_not_called()
+
+    def test_link_local_destination_is_rejected_before_transport(self):
+        request = build_probe_request("http://169.254.169.254/latest/meta-data")
+        with patch("tools.http_fetcher.urlopen") as mock_open:
+            with self.assertRaises(ValueError):
+                fetch_http_probe(request)
+            mock_open.assert_not_called()
+
+    @patch("tools.http_fetcher.urlopen")
+    def test_redirect_to_private_destination_is_rejected(self, mock_open):
+        mock_open.return_value = _Response(url="http://127.0.0.1/private.m3u8")
+        request = build_probe_request("https://example.test/live.m3u8")
+        with self.assertRaises(ValueError):
+            fetch_http_probe(request)
+
 
 if __name__ == "__main__":
     unittest.main()
