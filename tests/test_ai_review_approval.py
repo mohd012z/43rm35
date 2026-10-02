@@ -26,6 +26,34 @@ class AIReviewApprovalTests(unittest.TestCase):
         self.assertFalse(result.approval_required)
         self.assertEqual(result.disposition, "PROCEED_AUTOMATICALLY")
 
+    def test_stale_review_cannot_auto_approve_verified_branch_change(self):
+        result = evaluate_approval(ActionContext(
+            action="modify_code",
+            target_branch="feature/catalogue-validator",
+            reversible=True,
+            checks_green=True,
+            evidence_verified=True,
+            reviewed_sha="old-review-sha",
+            current_head_sha="new-head-sha",
+            impact="MEDIUM",
+        ))
+        self.assertTrue(result.approval_required)
+        self.assertEqual(result.disposition, "STALE_REVIEW")
+
+    def test_matching_review_sha_preserves_verified_auto_approval(self):
+        result = evaluate_approval(ActionContext(
+            action="modify_code",
+            target_branch="feature/catalogue-validator",
+            reversible=True,
+            checks_green=True,
+            evidence_verified=True,
+            reviewed_sha="same-sha",
+            current_head_sha="same-sha",
+            impact="MEDIUM",
+        ))
+        self.assertFalse(result.approval_required)
+        self.assertEqual(result.disposition, "PROCEED_AUTOMATICALLY")
+
     def test_verified_reversible_feature_workflow_change_auto_proceeds(self):
         result = evaluate_approval(ActionContext(
             action="modify_workflow",
