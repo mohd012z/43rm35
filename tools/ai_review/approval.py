@@ -17,6 +17,8 @@ class ActionContext:
     no_action: bool = False
     checks_green: bool = False
     evidence_verified: bool = False
+    reviewed_sha: str = ""
+    current_head_sha: str = ""
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,10 @@ def evaluate_approval(context: ActionContext) -> ApprovalDecision:
     and evidence are green. Explicit approval remains required for secrets or
     permission changes, destructive/irreversible actions, ambiguous critical
     actions, and control-plane mutations directly on the trusted default branch.
+
+    When both a reviewed commit and current PR head are supplied, they must
+    match. A mismatch invalidates the prior review so stale evidence cannot be
+    used to authorize a newer mutation.
     """
     if context.no_action or context.action == "none":
         return ApprovalDecision(False, "NO_ACTION", "No repository action is required.")
@@ -48,6 +54,17 @@ def evaluate_approval(context: ActionContext) -> ApprovalDecision:
 
     if context.read_only or context.action in {"analyze", "run_tests", "static_check", "generate_report"}:
         return ApprovalDecision(False, "PROCEED_AUTOMATICALLY", "Read-only or verification operation.")
+
+    if (
+        context.reviewed_sha
+        and context.current_head_sha
+        and context.reviewed_sha != context.current_head_sha
+    ):
+        return ApprovalDecision(
+            True,
+            "STALE_REVIEW",
+            "Reviewed commit does not match the current PR head; re-ingest and reanalyse before approval.",
+        )
 
     if context.reversible and context.checks_green and context.evidence_verified:
         return ApprovalDecision(False, "PROCEED_AUTOMATICALLY", "Verified reversible branch operation.")
